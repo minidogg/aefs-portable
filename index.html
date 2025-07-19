@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AEFS - Portable</title>
+    <!-- AES ENCRYPTED FILESYSTEM -->
+</head>
+<body>
+    <div id="controls" style="display:none">
+    <input type="password" name="" id="password" placeholder="password">
+    <input type="password" name="" id="password2" placeholder="password enter 2">
+    <br>
+    <button id="encrypt">Encrypt File</button>
+    <button id="decrypt">Decrypt File</button>
+    </div>
+
+    <script>
+        // Basic safety mechanism against uneducated thiefs
+        if(!localStorage.getItem("authorized")){
+            let p = prompt("Password")
+            if(p==(new Date().getHours())*2)localStorage.setItem("authorized", true)
+        }else{
+            document.querySelector("#controls").style.display = "block"
+        }
+        function readFileAsync(file, isText) {
+  return new Promise((resolve, reject) => {
+    let reader = new FileReader();
+    reader.onload = () => {
+      resolve(reader.result);
+    };
+    reader.onerror = reject;
+    if(!isText)reader.readAsArrayBuffer(file);
+    if(isText)reader.readAsText(file);
+  })
+}
+
+    async function encryptAES(plainText, password) {
+      const toBase64 = (buffer) => btoa(String.fromCharCode(...new Uint8Array(buffer)));
+      const encode = (str) => new TextEncoder().encode(str);
+
+      const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV for AES-GCM
+
+      // Derive key from password (without salt – less secure)
+      const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        encode(password),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+      const key = await crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          salt: new Uint8Array([]), // Empty salt
+          iterations: 100000,
+          hash: "SHA-256"
+        },
+        keyMaterial,
+        { name: "AES-GCM", length: 256 },
+        true,
+        ["encrypt"]
+      );
+
+      const encrypted = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv: iv },
+        key,
+        encode(plainText)
+      );
+
+      return JSON.stringify({
+        ciphertext: toBase64(encrypted),
+        iv: toBase64(iv)
+      });
+}
+
+async function decryptAES(encryptedJSON, password) {
+    const fromBase64 = (b64) => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const decode = (buf) => new TextDecoder().decode(buf);
+    const encode = (str) => new TextEncoder().encode(str);
+
+    // Parse the encrypted payload
+    const { ciphertext, iv } = JSON.parse(encryptedJSON);
+    const encryptedBytes = fromBase64(ciphertext);
+    const ivBytes = fromBase64(iv);
+
+    // Derive the key (no salt)
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw",
+      encode(password),
+      "PBKDF2",
+      false,
+      ["deriveKey"]
+    );
+    const key = await crypto.subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        salt: new Uint8Array([]), // No salt
+        iterations: 100000,
+        hash: "SHA-256"
+      },
+      keyMaterial,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["decrypt"]
+    );
+
+    try {
+      const decryptedBuffer = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: ivBytes },
+        key,
+        encryptedBytes
+      );
+      return decode(decryptedBuffer);
+    } catch (err) {
+      console.error("Decryption failed:", err);
+      return null;
+    }
+  }
+
+async function WriteFileAsync(entry, content){
+    const writableStream = await entry.createWritable();
+
+    await writableStream.write(content);
+
+    await writableStream.close();
+}
+
+function _arrayBufferToBase64( buffer ) {
+    var binary = '';
+    var bytes = new Uint8Array( buffer );
+    var len = bytes.byteLength;
+    for (var i = 0; i < len; i++) {
+        binary += String.fromCharCode( bytes[ i ] );
+    }
+    return window.btoa( binary );
+}
+function _base64ToArrayBuffer(base64) {
+    var binary_string = window.atob(base64);
+    var len = binary_string.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) {
+        bytes[i] = binary_string.charCodeAt(i);
+    }
+    return bytes.buffer;
+}
+
+
+const password = document.querySelector("#password")
+const password2 = document.querySelector("#password2")
+document.querySelector("#encrypt").addEventListener("click", async()=>{
+    if(password.value!=password2.value){
+        alert("Passwords don't match")
+        return;
+    }
+    let handles = await window.showOpenFilePicker({multiple:true})
+
+    handles.forEach(async(handle)=>{
+        // console.log(handle)
+        let contents = _arrayBufferToBase64(await readFileAsync(await handle.getFile()))
+        // console.log(contents)
+        contents = await encryptAES(contents, password.value)
+        // console.log(contents)
+        await WriteFileAsync(handle, contents)
+    })
+
+})
+
+
+document.querySelector("#decrypt").addEventListener("click", async()=>{
+    if(password.value!=password2.value){
+        alert("Passwords don't match")
+        return;
+    }
+    let handles = await window.showOpenFilePicker({multiple:true})
+
+    handles.forEach(async(handle)=>{
+        // console.log(handle)
+        let contents = (await readFileAsync(await handle.getFile(), true))
+        // console.log(contents)
+        contents = await decryptAES(contents, password.value)
+        // console.log(contents)
+
+
+        let arrayBuffer = _base64ToArrayBuffer(contents)
+
+        await WriteFileAsync(handle, arrayBuffer)
+    })
+
+})
+    </script>
+</body>
+</html>
